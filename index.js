@@ -9,6 +9,9 @@ const prisma = new PrismaClient();
 const port = process.env.PORT || 3000;
 const SECRET_KEY = 'adghwgdaamsdwjdhbfdsamhuwadn'; 
 
+require('dotenv').config()
+
+
 app.use(bodyParser.json());
 
 // Helper function untuk autentikasi token JWT
