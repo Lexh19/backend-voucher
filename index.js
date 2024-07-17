@@ -3,39 +3,46 @@ const { PrismaClient } = require('@prisma/client');
 const bodyParser = require('body-parser');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const cors = require('cors');
+const multer = require('multer');
+const path = require('path');
+const uploadVoucher = require('./middlewares/storage')
+const pathfotoVoucher = path.join(__dirname, './public')
+const authToken = require('./middlewares/auth.js')
 
 const app = express();
 const prisma = new PrismaClient();
 const port = process.env.PORT || 3000;
-const SECRET_KEY = 'adghwgdaamsdwjdhbfdsamhuwadn'; 
+const baseURL = process.env.BASEURL || "http://localhost:3000/api"
+const SECRET_KEY = 'adghwgdaamsdwjdhbfdsamhuwadn';
 
-require('dotenv').config()
 
+require('dotenv').config();
 
+// Middleware
 app.use(bodyParser.json());
-
-// Helper function untuk autentikasi token JWT
-const authenticateToken = (req, res, next) => {
-  const token = req.headers['authorization'];
-  if (!token) return res.sendStatus(401);
-
-  jwt.verify(token, SECRET_KEY, (err, user) => {
-    if (err) return res.sendStatus(403);
-    req.user = user;
-    next();
-  });
+const corsOption = {
+  origin: "*",
+  credentials: true,
 };
+app.use(cors(corsOption));
+
+app.use(express.urlencoded({ extended: false }));
+app.use(express.json());
+
+app.use('/api/file/:filename', (req, res) => {
+  const filePath = path.join(pathfotoVoucher, req.params.filename)
+  res.sendFile(filePath)
+})
 
 // Registrasi user
 app.post('/api/register', async (req, res) => {
   const { username, password, email, nama } = req.body;
 
-  // Memastikan semua field yang dibutuhkan tersedia
   if (!username || !password || !email || !nama) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
-  // Meng-hash password sebelum disimpan ke database
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -48,7 +55,6 @@ app.post('/api/register', async (req, res) => {
       },
     });
 
-    // Respons jika registrasi berhasil
     res.status(201).json({
       message: 'User registered successfully',
       user: newUser,
@@ -61,13 +67,31 @@ app.post('/api/register', async (req, res) => {
 // Login user
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
-  const user = await prisma.user.findUnique({ where: { email } });
 
-  if (user && await bcrypt.compare(password, user.password)) {
-    const token = jwt.sign({ userId: user.id }, SECRET_KEY);
-    res.json({ token });
-  } else {
-    res.status(401).json({ error: 'Invalid email or password' });
+  try {
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    const passwordMatch = await bcrypt.compare(password, user.password);
+
+    if (passwordMatch) {
+      const token = jwt.sign({ userId: user.id }, SECRET_KEY);
+      res.json({ token });
+    } else {
+      res.status(401).json({ error: 'Invalid email or password' });
+    }
+  } catch (error) {
+    console.error('Error fetching user:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -77,7 +101,7 @@ app.post('/api/logout', (req, res) => {
 });
 
 // Get all vouchers
-app.get('/api/vouchers', authenticateToken, async (req, res) => {
+app.get('/api/vouchers', authToken, async (req, res) => {
   try {
     const vouchers = await prisma.voucher.findMany();
     res.json(vouchers);
@@ -86,15 +110,17 @@ app.get('/api/vouchers', authenticateToken, async (req, res) => {
   }
 });
 
+const upload = uploadVoucher
 // Create a new voucher
-app.post('/api/vouchers', authenticateToken, async (req, res) => {
-  const { nama, foto, kategori, status } = req.body;
+app.post('/api/vouchers', upload.single("file"),  authToken, async (req, res) => {
+  const { nama, kategori, status } = req.body;
+  const fileName = req.file.filename
 
   try {
     const newVoucher = await prisma.voucher.create({
       data: {
         nama,
-        foto,
+        foto : `${baseURL}/file/${fileName}`,
         kategori,
         status,
       },
@@ -105,8 +131,10 @@ app.post('/api/vouchers', authenticateToken, async (req, res) => {
   }
 });
 
+
+
 // Delete a voucher
-app.delete('/api/vouchers/:id', authenticateToken, async (req, res) => {
+app.delete('/api/vouchers/:id', authToken, async (req, res) => {
   const { id } = req.params;
 
   try {
@@ -118,25 +146,37 @@ app.delete('/api/vouchers/:id', authenticateToken, async (req, res) => {
 });
 
 // Claim a voucher
-app.post('/api/vouchers/:id/claim', authenticateToken, async (req, res) => {
+app.post('/api/vouchers/:id/claim', authToken, async (req, res) => {
   const { id } = req.params;
+  console.log(`Received request to claim voucher with ID: ${id}`); // Logging di backend
 
   try {
+    const existingVoucher = await prisma.voucher.findUnique({ where: { id: parseInt(id, 10) } });
+
+    if (!existingVoucher) {
+      return res.status(400).json({ error: 'Voucher not found' });
+    }
+
     const voucherClaim = await prisma.voucher_claim.create({
       data: {
         id_Voucher: parseInt(id, 10),
+        id_User: req.user.userId, // Associate claim with the authenticated user
       },
     });
+
     res.json(voucherClaim);
   } catch (error) {
-    res.status(400).json({ error: 'Voucher not found or already claimed' });
+    console.error('Error claiming voucher:', error.message);
+    res.status(400).json({ error: error.message });
   }
 });
 
+
 // Get voucher purchase history
-app.get('/api/vouchers/history', authenticateToken, async (req, res) => {
+app.get('/api/vouchers/history', authToken, async (req, res) => {
   try {
     const claims = await prisma.voucher_claim.findMany({
+      where: { id_User: req.user.userId }, // Filter by the authenticated user
       include: { voucher: true },
     });
     res.json(claims);
@@ -145,6 +185,45 @@ app.get('/api/vouchers/history', authenticateToken, async (req, res) => {
   }
 });
 
+app.delete('/api/vouchers/history/:id', authToken, async (req, res) => {
+  const { id } = req.params;
+  
+  try {
+    const userId = req.user.userId;
+
+    // Menghapus klaim voucher tertentu berdasarkan ID klaim dan ID pengguna yang diautentikasi
+    const deletedClaim = await prisma.voucher_claim.deleteMany({
+      where: { 
+        id: parseInt(id),  // ID klaim voucher
+        id_User: userId    // ID pengguna
+      }
+    });
+
+    if (deletedClaim.count > 0) {
+      res.json({ message: 'Klaim voucher berhasil dihapus.' });
+    } else {
+      res.status(404).json({ message: 'Klaim voucher tidak ditemukan atau tidak memiliki akses.' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+
+// Middleware untuk menangani rute yang tidak ditemukan (404 Not Found)
+app.use((req, res, next) => {
+  res.status(404).json({ error: 'Not Found' });
+});
+
+// Middleware untuk penanganan error global
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  if (!res.headersSent) {
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
 app.listen(port, () => {
-  console.log(`Server is running on http://localhost:${port}`);
+  console.log(`Server running on http://localhost:${port}`);
 });

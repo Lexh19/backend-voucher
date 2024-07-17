@@ -22,6 +22,9 @@ model User {
   email           String   @unique
   nama            String
   tanggal_daftar  DateTime @default(now())
+  
+  // Definisi relasi dari User ke Voucher_claim
+  voucherClaims   Voucher_claim[]
 }
 
 model Voucher {
@@ -36,11 +39,15 @@ model Voucher {
 model Voucher_claim {
   id            Int      @id @default(autoincrement())
   id_Voucher    Int
+  id_User       Int
+  
   tanggal_claim DateTime @default(now())
   
-  // Relations
+  // Relasi ke model Voucher dan User
   voucher     Voucher    @relation(fields: [id_Voucher], references: [id])
+  user        User       @relation(fields: [id_User], references: [id])
   
   // Indexes
   @@index([id_Voucher])
 }
+
